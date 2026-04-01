@@ -1,0 +1,65 @@
+# EvoMaster Feishu Bot Configuration
+# Usage: python -m evomaster.interface.feishu --config configs/feishu/config.yaml
+
+# ============================================
+# Feishu Bot Configuration
+# ============================================
+feishu:
+  # Feishu app credentials (read from .env)
+  app_id: "${FEISHU_APP_ID}"
+  app_secret: "${FEISHU_APP_SECRET}"
+
+  # API domain (Feishu: https://open.feishu.cn, Lark: https://open.larksuite.com)
+  domain: "https://open.feishu.cn"
+
+  # Connection mode: websocket (recommended) or webhook
+  connection_mode: "websocket"
+
+  # Default playground agent name
+  default_agent: "magiclaw"
+
+  # Default config file path (relative to project_root, defaults to configs/{agent}/config.yaml if not set)
+  # default_config_path: "configs/minimal/config.yaml"
+
+  # Maximum number of concurrent tasks
+  max_concurrent_tasks: 4
+
+  # Single task timeout (seconds)
+  task_timeout: 600
+
+  # List of user open_ids allowed to use the Bot (empty list = allow everyone)
+  allow_from: []
+
+  # Maximum number of concurrent sessions
+  max_sessions: 100
+
+  # 可用子智能体白名单（/list 命令展示）
+  # 格式: agent名称: 描述
+  available_agents:
+    agent_builder: "创建/设计/构建新的 AI Agent"
+    web_search_agent: "深度网络搜索与信息综合"
+    coding_agent: "代码编写、调试与执行"
+    report_writer_agent: "专业报告撰写"
+
+  # Docker 容器池配置（可选，启用后每个用户 session 分配独立容器）
+  container_pool:
+    enabled: true
+    image: "evomaster/base:bohrium"
+    initial_size: 20
+    max_size: 100
+    memory_limit: "8g"
+    cpu_limit: 4.0
+    network_mode: "host"
+    container_name_prefix: "evopool"
+
+  # 定时任务调度器配置
+  scheduler:
+    enabled: true
+    db_path: "data/scheduler/schedules.db"
+    max_jobs_per_chat: 20
+    
+    max_jobs_total: 200
+    max_concurrent_runs: 2
+    default_timezone: "Asia/Shanghai"
+    max_poll_interval: 60.0
+    max_retries: 3
