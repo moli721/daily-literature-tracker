@@ -25,21 +25,21 @@
 
 **LLM training**
 
-https://github.com/user-attachments/assets/62c132c1-6fe8-4c18-89c6-be330fab2c6f
+https://github.com/user-attachments/assets/a4b8042a-72ab-4fc3-893b-243e74eca6cc
 
 </td>
 <td width="33%" align="center" valign="top">
 
 **Material science**
 
-https://github.com/user-attachments/assets/590365c0-95a6-467e-a22b-3c373fb2bb8a
+https://github.com/user-attachments/assets/43b94144-a684-4ffe-9c45-aa5fd2242ce2
 
 </td>
 <td width="33%" align="center" valign="top">
 
 **Create an ML agent**
 
-https://github.com/user-attachments/assets/d5e2500b-f589-4676-b6cb-dce8ae000f2c
+https://github.com/user-attachments/assets/a8fe00ba-531c-4d53-b7bd-1bbedf7a6442
 
 </td>
 </tr>
