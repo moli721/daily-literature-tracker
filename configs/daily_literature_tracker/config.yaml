@@ -1,0 +1,57 @@
+# Daily Literature Tracker configuration
+
+llm:
+  grok:
+    provider: "openai"
+    model: "grok-4.20-0309-reasoning"
+    api_key: "${GROK_API_KEY}"
+    base_url: "${GROK_BASE_URL}"
+    temperature: 0.2
+    max_tokens: 16384
+    timeout: 60
+    max_retries: 3
+    retry_delay: 1.0
+
+  default: "grok"
+
+agents:
+  general:
+    llm: "grok"
+    max_turns: 12
+    finish_on_text_response: true
+    tools:
+      # Keep tools minimal for daily stability.
+      builtin: ["think", "finish"]
+      # Enable this when you want deep enrichment:
+      # mcp: "mcp_config.json"
+      mcp: ""
+      arxiv_raw_check: "arxiv_raw_check"
+
+    context:
+      max_tokens: 64000
+      truncation_strategy: "summary"
+      preserve_system_messages: true
+      preserve_recent_turns: 3
+
+    system_prompt_file: "prompts/system_prompt.txt"
+    user_prompt_file: "prompts/user_prompt.txt"
+
+session:
+  type: "local"
+
+  local:
+    working_dir: "./playground/daily_literature_tracker/workspace"
+    timeout: 300
+    gpu_devices: "0"
+    cpu_devices: "0-15"
+    symlinks: {}
+
+llm_output:
+  show_in_console: true
+  log_to_file: true
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: null
+  console: true

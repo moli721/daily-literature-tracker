@@ -27,6 +27,17 @@ llm:
     max_retries: 3
     retry_delay: 1.0
 
+  grok:
+    provider: "openai"
+    model: "grok-4.20-0309-reasoning"
+    api_key: "${GROK_API_KEY}"
+    base_url: "${GROK_BASE_URL}"
+    temperature: 0.7
+    max_tokens: 16384
+    timeout: 60
+    max_retries: 3
+    retry_delay: 1.0
+
   local_sglang:
     provider: "deepseek"
     model: "deepseek-v3.2"
@@ -38,18 +49,18 @@ llm:
     max_retries: 3
     retry_delay: 1.0
 
-  default: "openai"
+  default: "grok"
 
 # ============================================
 # Agent 配置
 # ============================================
 agents:
   general:
-    llm: "openai"
+    llm: "grok"
     max_turns: 50
     finish_on_text_response: false
     tools:
-      builtin: ["think", "finish"]
+      builtin: ["*"]
       google_search: "google_search"
       web_fetch: "web_fetch"
 

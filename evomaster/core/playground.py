@@ -1058,8 +1058,11 @@ class BasePlayground:
             self.logger.error(f"Failed to load MCP config: {e}")
             return None
         
-        # --- PATCH: replace placeholder paths in MCP config (global) ---
+        # --- PATCH: replace placeholders in MCP config (global) ---
         PLACEHOLDER = "__EVOMASTER_WORKSPACES__"
+        import os
+        import re
+        env_pattern = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
 
         def _deep_replace(obj, old: str, new: str):
             """Recursively replace `old` -> `new` in any string inside dict/list structures."""
@@ -1070,6 +1073,20 @@ class BasePlayground:
             if isinstance(obj, dict):
                 return {k: _deep_replace(v, old, new) for k, v in obj.items()}
             return obj
+
+        def _deep_substitute_env(obj):
+            """Recursively substitute ${VAR} placeholders from process environment."""
+            if isinstance(obj, str):
+                return env_pattern.sub(lambda m: os.environ.get(m.group(1), ""), obj)
+            if isinstance(obj, list):
+                return [_deep_substitute_env(x) for x in obj]
+            if isinstance(obj, dict):
+                return {k: _deep_substitute_env(v) for k, v in obj.items()}
+            return obj
+
+        # JSON-based MCP configs do not pass through ConfigManager YAML env substitution.
+        # Apply the same ${VAR} substitution here for consistency.
+        mcp_servers_config = _deep_substitute_env(mcp_servers_config)
 
         try:
             if self.run_dir is not None:

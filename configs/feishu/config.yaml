@@ -40,10 +40,11 @@ feishu:
     web_search_agent: "深度网络搜索与信息综合"
     coding_agent: "代码编写、调试与执行"
     report_writer_agent: "专业报告撰写"
+    daily_literature_tracker: "自动精准跟踪、检索并总结特定科研方向的最新论文早报"
 
   # Docker 容器池配置（可选，启用后每个用户 session 分配独立容器）
   container_pool:
-    enabled: true
+    enabled: false
     image: "evomaster/base:bohrium"
     initial_size: 20
     max_size: 100

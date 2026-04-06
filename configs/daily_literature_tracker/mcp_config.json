@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "grok_search": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/GuDaStudio/GrokSearch@grok-with-tavily",
+        "grok-search"
+      ],
+      "env": {
+        "GROK_API_URL": "https://api.x.ai/v1",
+        "GROK_API_KEY": "${GROK_API_KEY}",
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
+    }
+  }
+}

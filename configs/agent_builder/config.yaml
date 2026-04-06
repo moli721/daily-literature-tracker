@@ -26,6 +26,17 @@ llm:
     timeout: 120
     max_retries: 3
     retry_delay: 1.0
+
+  grok:
+    provider: "openai"
+    model: "grok-4.20-0309-reasoning"
+    api_key: "${GROK_API_KEY}"
+    base_url: "${GROK_BASE_URL}"
+    temperature: 0.3
+    max_tokens: 16384
+    timeout: 120
+    max_retries: 3
+    retry_delay: 1.0
   
   local_sglang:
     provider: "deepseek"
@@ -38,14 +49,14 @@ llm:
     max_retries: 3
     retry_delay: 1.0
 
-  default: "openai"
+  default: "grok"
 
 # ============================================
 # Agent Configuration (dual agent system: planner + builder)
 # ============================================
 agents:
   planner:
-    llm: "openai"
+    llm: "grok"
     max_turns: 100
     finish_on_text_response: false
     tools:
@@ -66,7 +77,7 @@ agents:
     user_prompt_file: "prompts/user_prompt.txt"
 
   builder:
-    llm: "openai"
+    llm: "grok"
     max_turns: 100
     finish_on_text_response: false
     tools:
