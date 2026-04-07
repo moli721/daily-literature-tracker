@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import requests
+import yaml
 from pydantic import Field
 from requests import exceptions as requests_exceptions
 from urllib3.exceptions import InsecureRequestWarning
@@ -36,9 +37,34 @@ _ABSTRACT_MAX_CHARS = 400
 _OBS_ABSTRACT_MAX_CHARS = 1800
 _BOOLEAN_KEYWORDS = {"and", "or", "not"}
 _TRACK_HISTORY_LIMIT = 2000
+_DEFAULT_CATEGORY_LIST = ["cs.CL", "cs.AI", "cs.CV", "cs.CR", "cs.LG"]
+_DEFAULT_CATEGORY_EXPR = ",".join(_DEFAULT_CATEGORY_LIST)
+_DEFAULT_KEYWORD_LIST = [
+    "safety",
+    "security",
+    "jailbreak",
+    "adversarial",
+    "moderation",
+    "guard",
+    "alignment",
+    "backdoor",
+    "hallucination",
+    "privacy",
+    "intellectual property",
+    "vulnerability",
+    "vulnerabilities",
+    "poison",
+    "victim",
+]
+_DEFAULT_KEYWORD_EXPR = (
+    "safety OR security OR jailbreak OR adversarial OR moderation OR guard OR alignment OR backdoor OR "
+    "hallucination OR privacy OR \"intellectual property\" OR vulnerability OR vulnerabilities OR poison OR victim"
+)
 
 _DEFAULT_FILTER_PROMPT_FILE = Path(__file__).resolve().parents[1] / "paper_to_hunt.md"
 _DEFAULT_HUNTS_DIR = Path(__file__).resolve().parents[1] / "hunts"
+_DEFAULT_CONFIG_FILE = Path(__file__).resolve().parents[1] / "config.yaml"
+_DEFAULT_SCAN_LIMIT = 100
 
 
 class ArxivRawCheckParams(BaseToolParams):
@@ -47,18 +73,18 @@ class ArxivRawCheckParams(BaseToolParams):
     name: ClassVar[str] = "arxiv_raw_check"
 
     category: str = Field(
-        default="cs.CL,cs.AI,cs.CV,cs.CR,cs.LG",
+        default=_DEFAULT_CATEGORY_EXPR,
         description="arXiv categories, e.g. cs.AI or cs.AI,cs.LG",
     )
     keyword: str = Field(
-        default="",
-        description="Optional keyword query. Empty means no keyword pre-filter.",
+        default=_DEFAULT_KEYWORD_EXPR,
+        description="Keyword query expression used for pre-filtering.",
     )
     days: int = Field(
         default=1,
-        ge=1,
+        ge=0,
         le=30,
-        description="Only keep papers from latest N days (UTC). Daily report default is 1.",
+        description="Only keep papers from latest N days (UTC). Default is 1 for daily report. 0 disables date filter.",
     )
     max_results: int = Field(
         default=0,
@@ -67,12 +93,12 @@ class ArxivRawCheckParams(BaseToolParams):
         description="Maximum papers returned. 0 means return all matched papers.",
     )
     scan_limit: int = Field(
-        default=0,
+        default=_DEFAULT_SCAN_LIMIT,
         ge=0,
         le=2000,
         description=(
             "How many latest arXiv entries to fetch per category before filtering. "
-            "Use 0 for auto mode: fetch pages until the time window boundary."
+            "Use 0 for all available pages."
         ),
     )
     profile: str = Field(
@@ -99,6 +125,8 @@ class ArxivRawCheckTool(BaseTool):
         super().__init__()
         project_root = Path(__file__).resolve().parents[3]
         self._state_file = project_root / "data" / "daily_literature_tracker" / "tracker_state.json"
+        self._config_file = _DEFAULT_CONFIG_FILE
+        self._tool_config = self._load_tool_config()
         self._verbose_log = (os.getenv("DAILY_ARXIV_VERBOSE_LOG", "1").strip().lower()) not in {
             "0",
             "false",
@@ -110,13 +138,147 @@ class ArxivRawCheckTool(BaseTool):
         if self._verbose_log:
             self.logger.info(message, *args)
 
+    def _load_tool_config(self) -> dict[str, Any]:
+        config: dict[str, Any] = {
+            "category": _DEFAULT_CATEGORY_EXPR,
+            "keyword": _DEFAULT_KEYWORD_EXPR,
+            "days": 1,
+            "scan_limit": _DEFAULT_SCAN_LIMIT,
+            "max_results": 0,
+            "include_seen": False,
+            "update_tracker": True,
+        }
+        if not self._config_file.exists():
+            return config
+
+        try:
+            raw = yaml.safe_load(self._config_file.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return config
+        except Exception as e:
+            self.logger.warning("Failed to load tracker config file %s: %s", self._config_file, e)
+            return config
+
+        categories = self._normalize_string_list(raw.get("category_list"))
+        if categories:
+            config["category"] = ",".join(categories)
+
+        keywords = self._normalize_string_list(raw.get("keyword_list"))
+        if keywords:
+            config["keyword"] = self._keywords_to_expr(keywords)
+
+        defaults = raw.get("defaults")
+        if isinstance(defaults, dict):
+            config["days"] = self._coerce_int(defaults.get("days"), fallback=config["days"], min_value=0, max_value=30)
+            config["scan_limit"] = self._coerce_int(
+                defaults.get("scan_limit"),
+                fallback=config["scan_limit"],
+                min_value=0,
+                max_value=2000,
+            )
+            config["max_results"] = self._coerce_int(
+                defaults.get("max_results"),
+                fallback=config["max_results"],
+                min_value=0,
+                max_value=200,
+            )
+            config["include_seen"] = self._coerce_bool(defaults.get("include_seen"), fallback=config["include_seen"])
+            config["update_tracker"] = self._coerce_bool(
+                defaults.get("update_tracker"),
+                fallback=config["update_tracker"],
+            )
+        return config
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return list(dict.fromkeys(out))
+
+    @staticmethod
+    def _keywords_to_expr(keywords: list[str]) -> str:
+        parts: list[str] = []
+        for keyword in keywords:
+            token = _WS_RE.sub(" ", keyword.strip())
+            if not token:
+                continue
+            if " " in token:
+                parts.append(f"\"{token}\"")
+            else:
+                parts.append(token)
+        return " OR ".join(parts)
+
+    @staticmethod
+    def _coerce_int(value: Any, fallback: int, min_value: int, max_value: int) -> int:
+        try:
+            num = int(value)
+        except Exception:
+            return fallback
+        return max(min_value, min(max_value, num))
+
+    @staticmethod
+    def _coerce_bool(value: Any, fallback: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off"}:
+                return False
+        return fallback
+
+    @staticmethod
+    def _parse_raw_args(args_json: str) -> dict[str, Any]:
+        try:
+            raw = json.loads(args_json)
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _apply_config_defaults(self, params: ArxivRawCheckParams, raw_args: dict[str, Any]) -> None:
+        if not str(raw_args.get("category", "")).strip():
+            params.category = str(self._tool_config.get("category", params.category))
+        if "keyword" not in raw_args:
+            params.keyword = str(self._tool_config.get("keyword", params.keyword))
+        if "days" not in raw_args:
+            params.days = self._coerce_int(self._tool_config.get("days"), fallback=params.days, min_value=0, max_value=30)
+        if "scan_limit" not in raw_args:
+            params.scan_limit = self._coerce_int(
+                self._tool_config.get("scan_limit"),
+                fallback=params.scan_limit,
+                min_value=0,
+                max_value=2000,
+            )
+        if "max_results" not in raw_args:
+            params.max_results = self._coerce_int(
+                self._tool_config.get("max_results"),
+                fallback=params.max_results,
+                min_value=0,
+                max_value=200,
+            )
+        if "include_seen" not in raw_args:
+            params.include_seen = self._coerce_bool(self._tool_config.get("include_seen"), fallback=params.include_seen)
+        if "update_tracker" not in raw_args:
+            params.update_tracker = self._coerce_bool(
+                self._tool_config.get("update_tracker"),
+                fallback=params.update_tracker,
+            )
+
     def execute(self, session: BaseSession, args_json: str) -> tuple[str, dict[str, Any]]:
         del session
+        raw_args = self._parse_raw_args(args_json)
         try:
             params = self.parse_params(args_json)
             assert isinstance(params, ArxivRawCheckParams)
         except Exception as e:
             return f"Invalid parameters: {e}", {"error": str(e)}
+        self._apply_config_defaults(params, raw_args)
 
         try:
             categories = self._normalize_categories(params.category)
@@ -127,7 +289,7 @@ class ArxivRawCheckTool(BaseTool):
             keyword_tokens = self._parse_keyword_tokens(params.keyword)
             track_key = self._build_track_key(categories, params.keyword, profile)
             filter_prompt, filter_prompt_file = self._load_filter_prompt(profile)
-            self._vlog("Task: %s", datetime.now(timezone.utc).date().isoformat())
+            self._vlog("Task: %s", date.today().isoformat())
             self._vlog(
                 "Params: profile=%s, category=%s, keyword=%s, days=%d, scan_limit=%s, max_results=%s, include_seen=%s, update_tracker=%s",
                 profile or "-",
@@ -140,16 +302,22 @@ class ArxivRawCheckTool(BaseTool):
                 params.update_tracker,
             )
 
-            cutoff_dt = datetime.now(timezone.utc) - timedelta(days=params.days)
-            entries, fetch_stats = self._fetch_entries(categories, params.scan_limit, cutoff_dt)
-            in_window_entries = [
-                e for e in entries if e.get("published_at") is not None and e["published_at"] >= cutoff_dt
-            ]
-            self._vlog("Total papers fetched: %d", len(entries))
-            self._vlog("In-window papers: %d", len(in_window_entries))
+            cutoff_date = date.today() - timedelta(days=params.days) if params.days > 0 else None
+            entries, fetch_stats = self._fetch_entries(categories, params.scan_limit)
+            raw_total = int(fetch_stats.get("raw_total", len(entries)))
+            deduped_total = int(fetch_stats.get("deduped_total", len(entries)))
+            in_window_entries = (
+                [e for e in entries if isinstance(e.get("published_date"), date) and e["published_date"] >= cutoff_date]
+                if cutoff_date is not None
+                else entries
+            )
+            self._vlog("Total papers: %d", raw_total)
+            self._vlog("Deduplicated papers across categories: %d", deduped_total)
+            if cutoff_date is not None:
+                self._vlog("In-window papers: %d", len(in_window_entries))
 
             keyword_entries, keyword_meta = self._apply_keyword_filter(in_window_entries, params.keyword)
-            self._vlog("Filtered papers by keyword: %d", len(keyword_entries))
+            self._vlog("Filtered papers by Keyword: %d", len(keyword_entries))
             llm_entries, llm_meta = self._apply_llm_filter(
                 keyword_entries,
                 enabled=True,
@@ -171,11 +339,7 @@ class ArxivRawCheckTool(BaseTool):
                 output_entries,
                 enabled=True,
             )
-            self._vlog(
-                "Translated abstracts into Chinese: %d/%d",
-                int(translation_meta.get("translated_count", 0)),
-                int(translation_meta.get("attempted_count", 0)),
-            )
+            self._vlog("Translated Abstracts into Chinese")
 
             if params.update_tracker:
                 self._write_track_history(
@@ -194,6 +358,8 @@ class ArxivRawCheckTool(BaseTool):
                 "mode": fetch_stats.get("mode", "arxivtoday_per_category"),
                 "api_total": int(fetch_stats.get("api_total", 0)),
                 "api_page_error_count": int(fetch_stats.get("api_page_error_count", 0)),
+                "raw_total": raw_total,
+                "cross_category_dedup_total": deduped_total,
                 "fetched_total": len(entries),
                 "window_total": len(in_window_entries),
                 "keyword_matched_total": len(keyword_entries),
@@ -203,8 +369,9 @@ class ArxivRawCheckTool(BaseTool):
                 "translation_success_total": int(translation_meta.get("translated_count", 0)),
             }
             self._vlog(
-                "Run summary: fetched=%d, window=%d, keyword=%d, llm=%d, new=%d, returned=%d",
-                stats["fetched_total"],
+                "Run summary: raw=%d, dedup=%d, window=%d, keyword=%d, llm=%d, new=%d, returned=%d",
+                stats["raw_total"],
+                stats["cross_category_dedup_total"],
                 stats["window_total"],
                 stats["keyword_matched_total"],
                 stats["llm_matched_total"],
@@ -260,13 +427,12 @@ class ArxivRawCheckTool(BaseTool):
         self,
         categories: list[str],
         scan_limit: int,
-        cutoff_dt: datetime,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         try:
-            return self._fetch_entries_via_api(categories, scan_limit, cutoff_dt)
+            return self._fetch_entries_via_api(categories, scan_limit)
         except Exception as api_error:
             self.logger.warning("arXiv API fetch failed, fallback to RSS: %s", api_error)
-            rss_entries = self._fetch_entries_via_rss(categories, scan_limit, cutoff_dt)
+            rss_entries = self._fetch_entries_via_rss(categories, scan_limit)
             if rss_entries:
                 return rss_entries, {
                     "api_total": 0,
@@ -275,6 +441,8 @@ class ArxivRawCheckTool(BaseTool):
                     "api_page_errors": [self._clip_text(str(api_error), 200)],
                     "mode": "arxivtoday_rss_fallback",
                     "scan_limit_effective": self._scan_limit_label(scan_limit),
+                    "raw_total": len(rss_entries),
+                    "deduped_total": len(rss_entries),
                     "categories": {},
                 }
             raise
@@ -283,7 +451,6 @@ class ArxivRawCheckTool(BaseTool):
         self,
         categories: list[str],
         scan_limit: int,
-        cutoff_dt: datetime,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         all_entries: list[dict[str, Any]] = []
         api_total = 0
@@ -295,7 +462,6 @@ class ArxivRawCheckTool(BaseTool):
                 category_entries, category_meta = self._fetch_one_category_via_api(
                     category=category,
                     max_results=scan_limit,
-                    cutoff_dt=cutoff_dt,
                 )
             except Exception as category_error:
                 page_errors.append(f"{category}: fatal={self._clip_text(str(category_error), 220)}")
@@ -306,6 +472,7 @@ class ArxivRawCheckTool(BaseTool):
                     "page_error_count": 1,
                     "stop_reason": "fatal",
                 }
+                self._vlog("Category %s: fetched=%d, pages=%d, stop=%s", category, 0, 0, "fatal")
                 continue
 
             all_entries.extend(category_entries)
@@ -337,6 +504,8 @@ class ArxivRawCheckTool(BaseTool):
                 "api_page_errors": [],
                 "mode": "arxivtoday_per_category",
                 "scan_limit_effective": self._scan_limit_label(scan_limit),
+                "raw_total": 0,
+                "deduped_total": 0,
                 "categories": category_stats,
             }
 
@@ -349,6 +518,8 @@ class ArxivRawCheckTool(BaseTool):
             "api_page_errors": page_errors[:8],
             "mode": "arxivtoday_per_category",
             "scan_limit_effective": self._scan_limit_label(scan_limit),
+            "raw_total": len(all_entries),
+            "deduped_total": len(deduped),
             "categories": category_stats,
         }
 
@@ -356,7 +527,6 @@ class ArxivRawCheckTool(BaseTool):
         self,
         category: str,
         max_results: int,
-        cutoff_dt: datetime,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         page_size = 100 if max_results <= 0 else min(100, max_results)
         start = 0
@@ -396,15 +566,7 @@ class ArxivRawCheckTool(BaseTool):
                 stop_reason = "feed_exhausted"
                 break
 
-            page_in_window = [
-                entry
-                for entry in page_entries
-                if entry.get("published_at") is not None and entry["published_at"] >= cutoff_dt
-            ]
-            entries.extend(page_in_window)
-            if len(page_in_window) < len(page_entries):
-                stop_reason = "time_window_reached"
-                break
+            entries.extend(page_entries)
             if len(page_entries) < current_size:
                 stop_reason = "feed_exhausted"
                 break
@@ -419,23 +581,17 @@ class ArxivRawCheckTool(BaseTool):
             "page_errors": page_errors[:4],
         }
 
-    def _fetch_entries_via_rss(self, categories: list[str], scan_limit: int, cutoff_dt: datetime) -> list[dict[str, Any]]:
+    def _fetch_entries_via_rss(self, categories: list[str], scan_limit: int) -> list[dict[str, Any]]:
         if not categories:
             return []
-        per_cat_limit = min(1000, scan_limit) if scan_limit > 0 else 1000
+        per_cat_limit = 1000 if scan_limit <= 0 else min(1000, scan_limit)
 
         all_entries: list[dict[str, Any]] = []
         for category in categories:
             url = f"https://rss.arxiv.org/rss/{category}"
             content = self._http_get(url)
             category_entries = self._parse_rss_feed(content)
-            limited_entries = category_entries[:per_cat_limit]
-            in_window_entries = [
-                entry
-                for entry in limited_entries
-                if entry.get("published_at") is not None and entry["published_at"] >= cutoff_dt
-            ]
-            all_entries.extend(in_window_entries)
+            all_entries.extend(category_entries[:per_cat_limit])
 
         return self._dedupe_entries_keep_first(all_entries)
 
@@ -600,8 +756,18 @@ class ArxivRawCheckTool(BaseTool):
         keyword_set = set(keywords)
         matched: list[dict[str, Any]] = []
         for entry in entries:
-            words = set((entry.get("summary") or "").lower().split())
-            if keyword_set & words:
+            abstract = (entry.get("summary") or "").lower()
+            words = set(abstract.split())
+            has_match = False
+            for keyword in keyword_set:
+                if " " in keyword:
+                    if keyword in abstract:
+                        has_match = True
+                        break
+                elif keyword in words:
+                    has_match = True
+                    break
+            if has_match:
                 matched.append(entry)
 
         return matched, {
@@ -654,8 +820,8 @@ class ArxivRawCheckTool(BaseTool):
                     matched.append(entry)
                 self._vlog(
                     "LLM response for paper \"%s\": %s",
-                    self._clip_text(title, 160),
-                    "Yes" if is_match else "No",
+                    title,
+                    self._clean_text(raw_reply) or ("Yes" if is_match else "No"),
                 )
                 decisions.append(
                     {
@@ -667,10 +833,8 @@ class ArxivRawCheckTool(BaseTool):
             except Exception as e:
                 fail_count += 1
                 self._vlog(
-                    "LLM response for paper \"%s\": ERROR (%s), fail-open=%s",
-                    self._clip_text(title, 160),
-                    self._clip_text(str(e), 120),
-                    fail_open,
+                    "LLM Service Error for paper: %s. Assuming it matches.",
+                    title,
                 )
                 decisions.append(
                     {
@@ -1118,6 +1282,8 @@ Output translation only, no explanations.
             f"include_seen: {params.include_seen}",
             f"source: {stats['source']}",
             f"mode: {stats.get('mode', '-')}",
+            f"raw_total: {stats.get('raw_total', 0)}",
+            f"cross_category_dedup_total: {stats.get('cross_category_dedup_total', 0)}",
             f"new_total: {stats['new_total']}",
             f"returned_total: {stats['returned_total']}",
             f"api_total: {stats['api_total']}",
@@ -1292,9 +1458,9 @@ Output translation only, no explanations.
 
     @staticmethod
     def _scan_limit_label(scan_limit: int) -> str:
-        if scan_limit > 0:
-            return str(scan_limit)
-        return "auto"
+        if scan_limit <= 0:
+            return "all"
+        return str(scan_limit)
 
     @staticmethod
     def _max_results_label(max_results: int) -> str:
@@ -1309,7 +1475,7 @@ Output translation only, no explanations.
         percent = int((safe_current * 100) / safe_total)
         bar_width = 60
         filled = int((safe_current * bar_width) / safe_total)
-        bar = ("█" * filled) + (" " * (bar_width - filled))
+        bar = ("#" * filled) + (" " * (bar_width - filled))
 
         elapsed = max(0.0, time.time() - started_at) if started_at > 0 else 0.0
         seconds_per_item = (elapsed / safe_current) if safe_current > 0 else 0.0

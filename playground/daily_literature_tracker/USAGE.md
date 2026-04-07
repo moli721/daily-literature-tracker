@@ -1,43 +1,37 @@
 # Daily Literature Tracker Usage (Minimal)
 
-## 默认行为（极简日报）
-- 默认分类：`cs.CL,cs.AI,cs.CV,cs.CR,cs.LG`
-- 默认时间窗：`days=1`（日报）
-- 默认抓取：`scan_limit=auto`（自动翻页到时间窗边界）
-- 默认返回：`max_results=all`（相关论文全发，不截断）
-- 通过 `profile` 对应 hunts 提示词 + LLM 对每篇论文判定相关性
-- 用 `tracker_state.json` 做增量去重
+## 当前默认（来自 config.yaml）
+- `category_list`: `cs.CL,cs.AI,cs.CV,cs.CR,cs.LG`
+- `keyword_list`: 安全相关 15 个关键词
+- `days: 1`（日报，默认只看最近一天）
+- `scan_limit: 100`（每个分类默认抓取 100 篇，和 ArXivToday-Lark 对齐）
+- `max_results: 0`（all，不设返回上限）
 
-## 你通常只需要传这两个参数
-- `profile`
-- `category`（可不传，不传就用默认 5 个分类）
+## 参数语义
+- `days=1`：包含今天与昨天（日报默认）
+- `days>1`：包含今天与最近 N 天
+- `days=0`：不按日期过滤
+- `scan_limit=100`：每个分类默认抓 100 篇（推荐，开源同款）
+- `scan_limit=0`：每个分类不设上限抓取（全量模式）
+- `scan_limit>0`：每个分类最多抓 N 篇
+- `max_results=0`：返回全部相关论文
 
-## 可选参数
-- `days`：默认 `1`
-- `keyword`：默认空（不做关键词预筛）
-- `scan_limit`：默认 `0/auto`
-- `max_results`：默认 `0/all`
-- `include_seen`：默认 `false`
-- `update_tracker`：默认 `true`
+## 优先级
+- 对话显式参数 > `config.yaml` > 工具内置兜底
 
-## 推荐调用（日报）
+## 最简调用
 ```text
 @Magiclaw daily_literature_tracker 请做今日论文早报：先调用 arxiv_raw_check，参数 profile=alice；按“今日论文早报”模板输出。
 ```
 
-## 运行日志（默认开启）
-- 会输出类似 ArXivToday-Lark 的日志：
-  - `Task / Params`
-  - `Total papers fetched`
-  - `Filtered papers by keyword / LLM`
-  - `LLM response for paper "...": Yes/No`
+## 日志
+- 默认开启，包含：
+  - `Total papers`
+  - `Deduplicated papers across categories`
+  - `Filtered papers by Keyword`
+  - `LLM response for paper "...": <raw-response>`
+  - `Filtered papers by LLM`
   - `Deduplicated papers`
-  - `Translating Abstracts: 63%|████...| 22/35 [05:20<02:55, 13.54s/it]`（进度条）
-  - `Run summary`
-- 关闭详细日志：设置环境变量 `DAILY_ARXIV_VERBOSE_LOG=0`
-
-## 状态文件
-- `G:\xhe\MagiClaw\data\daily_literature_tracker\tracker_state.json`
-- 结构：`track_key -> papers[]`
-- 去重：按 `paper_id`，新论文在前
-- 保留：每个 track 最多 `2000` 条
+  - `Translating Abstracts: xx%|####...|`
+  - `Translated Abstracts into Chinese`
+- 关闭：`DAILY_ARXIV_VERBOSE_LOG=0`

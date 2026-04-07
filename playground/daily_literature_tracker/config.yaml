@@ -1,0 +1,30 @@
+category_list:
+  - cs.CL
+  - cs.AI
+  - cs.CV
+  - cs.CR
+  - cs.LG
+
+keyword_list:
+  - safety
+  - security
+  - jailbreak
+  - adversarial
+  - moderation
+  - guard
+  - alignment
+  - backdoor
+  - hallucination
+  - privacy
+  - intellectual property
+  - vulnerability
+  - vulnerabilities
+  - poison
+  - victim
+
+defaults:
+  days: 1
+  scan_limit: 100
+  max_results: 0
+  include_seen: false
+  update_tracker: true

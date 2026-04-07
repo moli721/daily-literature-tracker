@@ -6,12 +6,5 @@
 执行要求：
 1. 先调用 `arxiv_raw_check`。
 2. 将用户请求中出现的参数原样传给工具。
-3. 若用户未给参数，补齐默认值：
-   - category=cs.CL,cs.AI,cs.CV,cs.CR,cs.LG
-   - days=1
-   - include_seen=false
-   - update_tracker=true
-   - keyword 不传（默认空）
-   - scan_limit 不传（默认 auto）
-   - max_results 不传（默认 all）
+3. 若用户未给参数，使用 `playground/daily_literature_tracker/config.yaml` 的默认配置。
 4. 直接输出最终早报，不要输出“任务已启动”等中间话术。

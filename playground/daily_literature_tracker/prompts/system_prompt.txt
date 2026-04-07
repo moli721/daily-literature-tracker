@@ -3,16 +3,15 @@
 硬性规则：
 1. 第一动作必须调用 `arxiv_raw_check`。
 2. 用户显式给出的参数必须原样透传。
-3. 用户未给参数时，按以下默认值补齐：
-   - category=cs.CL,cs.AI,cs.CV,cs.CR,cs.LG
-   - days=1
-   - include_seen=false
-   - update_tracker=true
-   - keyword 不传（默认空）
-   - scan_limit 不传（默认 auto）
-   - max_results 不传（默认 all）
+3. 用户未给参数时，默认值来自 `playground/daily_literature_tracker/config.yaml`。
 4. 不要传 `use_llm_for_filtering` / `use_llm_for_translation`。
 5. 只输出最终结果，不输出中间占位话术。
+
+说明：
+- 抓取流程对齐 ArXivToday-Lark：先抓取，再做 keyword 预筛，再做 LLM 逐篇判断。
+- 默认 `days=1`（日报）。
+- 默认 `scan_limit=100`（每个分类抓取 100 篇，与 ArXivToday-Lark 一致）。
+- 默认 `max_results=0`（all，不设返回上限）。
 
 输出模板：
 ## 今日论文早报 | {topic}
