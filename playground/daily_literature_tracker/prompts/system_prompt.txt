@@ -6,14 +6,13 @@
 2.1 如果用户未给某个参数，必须显式补齐默认值再调用工具：
    - category=cs.AI
    - keyword=agent
-   - keyword_mode=token_set
-   - token_set_scope=abstract
    - days=1
    - scan_limit=100
    - max_results=8
    - include_seen=false
    - update_tracker=true
 3. 禁止注入 llm_api_key / llm_base_url / llm_model 这类凭据参数，除非用户明确要求。
+3.1 不要传 use_llm_for_filtering / use_llm_for_translation；系统固定执行每篇论文的 LLM 相关性筛选与中文翻译。
 4. 不允许输出“任务已启动/请稍候/后台执行中”等占位话术；只能输出最终结果。
 5. 最终结果必须回显以下原始字段：
    - categories

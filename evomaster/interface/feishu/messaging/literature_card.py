@@ -264,9 +264,16 @@ def _parse_markdown_papers(text: str) -> list[DigestPaper]:
             [
                 r"(?im)^\s*[-*]\s*(?:摘要\(ZH\)|摘要\(中\)|zh_abstract|abstract_zh)\s*[：:]\s*(.+?)\s*$",
                 r"(?im)^\s*zh_abstract\s*[=:]\s*(.+?)\s*$",
+            ],
+        )
+        abstract_plain = _extract_value(
+            block,
+            [
                 r"(?im)^\s*[-*]\s*摘要\s*[：:]\s*(.+?)\s*$",
             ],
         )
+        if not abstract_en and abstract_plain:
+            abstract_en = abstract_plain
         url = _extract_link(block)
         papers.append(
             DigestPaper(
@@ -308,8 +315,12 @@ def _parse_tool_observation_papers(text: str) -> list[DigestPaper]:
         if line.startswith("url="):
             current.url = _clean_line(line.split("=", 1)[1])
         elif line.startswith("abstract_short="):
-            # backward compatibility: old field is usually Chinese one-line summary
-            current.abstract_zh = _clean_line(line.split("=", 1)[1])
+            # backward compatibility: in current tool output this is an English short abstract
+            value = _clean_line(line.split("=", 1)[1])
+            if not current.abstract_en:
+                current.abstract_en = value
+            elif not current.abstract_zh:
+                current.abstract_zh = value
         elif line.startswith("abstract_en="):
             current.abstract_en = _clean_line(line.split("=", 1)[1])
         elif line.startswith("abstract_zh="):
@@ -377,7 +388,11 @@ def _fill_field(paper: DigestPaper, line: str) -> None:
         paper.url = _extract_link(line) or _clean_line(line.split("=", 1)[1])
         return
     if lower.startswith("abstract_short="):
-        paper.abstract_zh = _clean_line(line.split("=", 1)[1])
+        value = _clean_line(line.split("=", 1)[1])
+        if not paper.abstract_en:
+            paper.abstract_en = value
+        elif not paper.abstract_zh:
+            paper.abstract_zh = value
         return
     if lower.startswith("abstract_en="):
         paper.abstract_en = _clean_line(line.split("=", 1)[1])
@@ -423,12 +438,25 @@ def _fill_field(paper: DigestPaper, line: str) -> None:
         return
 
     abs_zh_match = re.match(
-        r"^(?:[-*]\s*)?(?:摘要\(ZH\)|摘要|abstract(?:_zh|\(zh\))|zh_abstract)\s*[：:]\s*(.+)$",
+        r"^(?:[-*]\s*)?(?:摘要\(ZH\)|摘要\(中\)|abstract(?:_zh|\(zh\))|zh_abstract)\s*[：:]\s*(.+)$",
         line,
         flags=re.IGNORECASE,
     )
     if abs_zh_match:
         paper.abstract_zh = _clean_line(abs_zh_match.group(1))
+        return
+
+    abs_plain_match = re.match(
+        r"^(?:[-*]\s*)?摘要\s*[：:]\s*(.+)$",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if abs_plain_match:
+        value = _clean_line(abs_plain_match.group(1))
+        if not paper.abstract_en:
+            paper.abstract_en = value
+        elif not paper.abstract_zh:
+            paper.abstract_zh = value
         return
 
     url = _extract_link(line)
@@ -471,6 +499,11 @@ def _normalize_paper(paper: DigestPaper) -> DigestPaper:
     abstract_en = _truncate(_clean_line(paper.abstract_en), _MAX_SUMMARY_LEN)
     abstract_zh = _truncate(_clean_line(paper.abstract_zh), _MAX_SUMMARY_LEN)
     relevance = _clean_line(paper.relevance)
+
+    if _is_placeholder_text(abstract_en):
+        abstract_en = ""
+    if _is_placeholder_text(abstract_zh):
+        abstract_zh = ""
 
     if not url:
         from_id = _extract_link(paper_id)
@@ -596,26 +629,41 @@ def _build_card(
         elements.append({"tag": "markdown", "content": "今天没有新增论文。"})
     elif papers:
         elements.append({"tag": "hr"})
+        table_lines = [
+            "| 序号 | 论文标题 | arXiv ID | 论文日期 | 链接 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for offset, paper in enumerate(papers):
+            idx = global_start_index + offset
+            table_lines.append(
+                "| {idx} | {title} | {paper_id} | {published} | {link} |".format(
+                    idx=idx,
+                    title=_truncate(_clean_line(paper.title), 60) or "-",
+                    paper_id=_clean_line(paper.paper_id) or "-",
+                    published=_clean_line(paper.published) or "-",
+                    link=f"[查看]({paper.url})" if paper.url else "-",
+                )
+            )
+        elements.append({"tag": "markdown", "content": "\n".join(table_lines)})
+        elements.append({"tag": "hr"})
+
         for offset, paper in enumerate(papers):
             idx = global_start_index + offset
             block_lines = [f"**{idx}. {_truncate(_clean_line(paper.title), _MAX_TITLE_LEN)}**"]
-            meta = []
-            if paper.paper_id:
-                meta.append(f"arXiv: `{paper.paper_id}`")
             if paper.published:
-                meta.append(f"日期: {paper.published}")
-            if paper.relevance:
-                meta.append(f"相关性: {paper.relevance}")
-            if meta:
-                block_lines.append(" | ".join(meta))
-            if paper.abstract_en:
-                block_lines.append(f"摘要(EN)：{paper.abstract_en}")
-            if paper.abstract_zh:
-                block_lines.append(f"摘要(ZH)：{paper.abstract_zh}")
-            elif paper.display_abstract:
-                block_lines.append(f"摘要：{paper.display_abstract}")
+                block_lines.append(f"- 论文日期: {paper.published}")
+            if paper.paper_id:
+                block_lines.append(f"- arXiv ID: {paper.paper_id}")
             if paper.url:
-                block_lines.append(f"[查看论文]({paper.url})")
+                block_lines.append(f"- 论文链接: {paper.url}")
+            if paper.relevance:
+                block_lines.append(f"- 相关性: {paper.relevance}")
+            if paper.abstract_en:
+                block_lines.append(f"\n摘要(EN)\n{paper.abstract_en}")
+            if paper.abstract_zh:
+                block_lines.append(f"\n摘要(ZH)\n{paper.abstract_zh}")
+            elif paper.display_abstract:
+                block_lines.append(f"\n摘要\n{paper.display_abstract}")
             elements.append({"tag": "markdown", "content": "\n".join(block_lines)})
             if offset != len(papers) - 1:
                 elements.append({"tag": "hr"})
@@ -722,3 +770,8 @@ def _truncate(text: str, max_len: int) -> str:
     if len(cleaned) <= max_len:
         return cleaned
     return cleaned[: max_len - 3].rstrip() + "..."
+
+
+def _is_placeholder_text(text: str) -> bool:
+    lowered = _clean_line(text).lower()
+    return lowered in {"-", "--", "n/a", "na", "none", "null"}

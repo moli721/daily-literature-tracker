@@ -21,6 +21,135 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 _playgrounds_imported = False
+_DAILY_DIGEST_MARKERS = (
+    "daily_arxiv_digest_ready",
+    "今日论文早报",
+    "新增论文",
+    "today_no_new_papers",
+    "track_key:",
+)
+
+
+def _looks_like_daily_digest_text(text: str) -> bool:
+    content = (text or "").strip()
+    if not content:
+        return False
+    return any(marker in content for marker in _DAILY_DIGEST_MARKERS)
+
+
+def _is_structured_daily_digest_text(text: str) -> bool:
+    """Return True only for parseable daily digest content, not generic summaries."""
+    content = (text or "").strip()
+    if not content:
+        return False
+    if "daily_arxiv_digest_ready" in content:
+        return True
+    if re.search(r"(?im)^#{1,3}\s*(?:今日论文早报|AI 论文早报|ArXiv Today)\b", content):
+        return True
+    has_track = bool(
+        re.search(r"(?im)^\s*(?:track_key\s*:|[-*]\s*追踪键\s*[：:])\s*.+$", content)
+    )
+    has_body = bool(
+        re.search(
+            r"(?im)^\s*(?:papers:|today_no_new_papers|###\s*新增论文|[-*]\s*结果\s*[：:])",
+            content,
+        )
+    )
+    return has_track and has_body
+
+
+def _extract_last_assistant_content(trajectory: Any, prefer_daily_digest: bool = False) -> str:
+    """Extract latest assistant content from trajectory.
+
+    When prefer_daily_digest=True, only returns content matching daily digest markers.
+    """
+    if not trajectory:
+        return ""
+
+    if isinstance(trajectory, dict):
+        dialogs = trajectory.get("dialogs")
+    elif hasattr(trajectory, "dialogs"):
+        dialogs = trajectory.dialogs
+    else:
+        dialogs = None
+    if not dialogs:
+        return ""
+
+    # Flatten messages and scan from tail to head.
+    all_messages: list[Any] = []
+    for dialog in dialogs:
+        if isinstance(dialog, dict):
+            all_messages.extend(dialog.get("messages", []) or [])
+        else:
+            all_messages.extend(getattr(dialog, "messages", []) or [])
+
+    for message in reversed(all_messages):
+        if isinstance(message, dict):
+            role = message.get("role", "")
+            content = message.get("content", "")
+            tool_calls = message.get("tool_calls", [])
+        else:
+            role = getattr(message, "role", None)
+            role = role.value if hasattr(role, "value") else str(role) if role else ""
+            content = getattr(message, "content", "")
+            tool_calls = getattr(message, "tool_calls", [])
+
+        if role != "assistant":
+            continue
+        if not content or not str(content).strip():
+            continue
+        # Ignore assistant messages that are pure tool-call envelopes.
+        if tool_calls:
+            continue
+        content_text = str(content).strip()
+        if prefer_daily_digest and not _is_structured_daily_digest_text(content_text):
+            continue
+        return content_text
+    return ""
+
+
+def _extract_last_tool_content(trajectory: Any, prefer_daily_digest: bool = False) -> str:
+    """Extract latest tool content from trajectory.
+
+    When prefer_daily_digest=True, only returns structured daily digest text.
+    """
+    if not trajectory:
+        return ""
+
+    if isinstance(trajectory, dict):
+        dialogs = trajectory.get("dialogs")
+    elif hasattr(trajectory, "dialogs"):
+        dialogs = trajectory.dialogs
+    else:
+        dialogs = None
+    if not dialogs:
+        return ""
+
+    all_messages: list[Any] = []
+    for dialog in dialogs:
+        if isinstance(dialog, dict):
+            all_messages.extend(dialog.get("messages", []) or [])
+        else:
+            all_messages.extend(getattr(dialog, "messages", []) or [])
+
+    for message in reversed(all_messages):
+        if isinstance(message, dict):
+            role = message.get("role", "")
+            content = message.get("content", "")
+        else:
+            role = getattr(message, "role", None)
+            role = role.value if hasattr(role, "value") else str(role) if role else ""
+            content = getattr(message, "content", "")
+
+        if role != "tool":
+            continue
+        if not content or not str(content).strip():
+            continue
+        content_text = str(content).strip()
+        if prefer_daily_digest and not _is_structured_daily_digest_text(content_text):
+            continue
+        return content_text
+    return ""
 
 
 def _ensure_playgrounds_imported(project_root: Path) -> None:
@@ -88,9 +217,22 @@ def _extract_final_answer(result: dict[str, Any]) -> str:
     if isinstance(traj_result, dict) and traj_result.get("reason") == "max_turns_exceeded":
         return "超过步数限制"
 
+    # Prefer canonical tool observation for daily literature digest.
+    # It is more stable than model-rewritten prose and preserves parseable fields.
+    tool_digest = _extract_last_tool_content(trajectory, prefer_daily_digest=True)
+    if tool_digest:
+        return tool_digest
+
     answer = extract_agent_response(trajectory)
+    digest_answer = _extract_last_assistant_content(trajectory, prefer_daily_digest=True)
+    if digest_answer and not _is_structured_daily_digest_text(answer):
+        return digest_answer
     if answer:
         return answer
+
+    fallback_answer = _extract_last_assistant_content(trajectory, prefer_daily_digest=False)
+    if fallback_answer:
+        return fallback_answer
 
     status = result.get("status", "unknown")
     steps = result.get("steps", 0)
@@ -119,23 +261,11 @@ class TaskDispatcher:
         "profile",
         "category",
         "keyword",
-        "keyword_mode",
-        "keyword_list",
-        "token_set_scope",
         "days",
         "scan_limit",
         "max_results",
         "include_seen",
         "update_tracker",
-        "track_key",
-        "strict_llm_filter",
-        "use_llm_for_filtering",
-        "use_llm_for_translation",
-        "llm_filter_fail_open",
-        "llm_filter_prompt_file",
-        "llm_model",
-        "llm_base_url",
-        "llm_api_key",
     ]
 
     def __init__(
@@ -828,10 +958,6 @@ class TaskDispatcher:
         bool_keys = {
             "include_seen",
             "update_tracker",
-            "strict_llm_filter",
-            "use_llm_for_filtering",
-            "use_llm_for_translation",
-            "llm_filter_fail_open",
         }
         int_keys = {"days", "scan_limit", "max_results"}
 
