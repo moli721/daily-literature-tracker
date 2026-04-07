@@ -48,11 +48,11 @@ class ArxivRawCheckParams(BaseToolParams):
     name: ClassVar[str] = "arxiv_raw_check"
 
     category: str = Field(
-        default="cs.AI",
+        ...,
         description="arXiv categories, supports one or multiple: cs.AI or cs.AI,cs.LG",
     )
     keyword: str = Field(
-        default="agent",
+        ...,
         description=(
             "Keyword expression on title+abstract. Supports OR/AND. "
             'Examples: agent; "large language"; LLM OR "large language"; safety AND agent'
@@ -71,13 +71,13 @@ class ArxivRawCheckParams(BaseToolParams):
         description='Scope for token_set mode: "abstract" (ArXivToday-like) or "title_abstract".',
     )
     days: int = Field(
-        default=1,
+        ...,
         ge=1,
         le=30,
         description="Only keep papers from latest N days (UTC).",
     )
     max_results: int = Field(
-        default=8,
+        ...,
         ge=1,
         le=30,
         description="Maximum number of papers returned in the observation/info payload.",
@@ -89,7 +89,7 @@ class ArxivRawCheckParams(BaseToolParams):
         description="Maximum abstract length per paper in output payload.",
     )
     scan_limit: int = Field(
-        default=100,
+        ...,
         ge=20,
         le=2000,
         description="How many latest arXiv entries to fetch before filtering.",
@@ -107,11 +107,11 @@ class ArxivRawCheckParams(BaseToolParams):
         ),
     )
     include_seen: bool = Field(
-        default=False,
+        ...,
         description="When true, include already-seen papers in results.",
     )
     update_tracker: bool = Field(
-        default=True,
+        ...,
         description="Whether to persist seen paper ids.",
     )
     use_llm_for_filtering: bool = Field(
@@ -140,18 +140,6 @@ class ArxivRawCheckParams(BaseToolParams):
     use_llm_for_translation: bool = Field(
         default=True,
         description="Translate abstracts to Chinese for card template field zh_abstract.",
-    )
-    llm_model: str = Field(
-        default="",
-        description="Optional LLM model override for filtering/translation.",
-    )
-    llm_base_url: str = Field(
-        default="",
-        description="Optional base URL override for filtering/translation.",
-    )
-    llm_api_key: str = Field(
-        default="",
-        description="Optional API key override for filtering/translation.",
     )
 
 
@@ -255,7 +243,6 @@ class ArxivRawCheckTool(BaseTool):
                 "scan_limit": params.scan_limit,
                 "max_results": params.max_results,
                 "use_llm_for_filtering": params.use_llm_for_filtering,
-                "strict_llm_filter": params.strict_llm_filter,
                 "use_llm_for_translation": params.use_llm_for_translation,
                 "stats": stats,
                 "paper_ids": [e["paper_id"] for e in output_entries],
@@ -734,9 +721,7 @@ class ArxivRawCheckTool(BaseTool):
 
     @staticmethod
     def _effective_llm_fail_open(params: ArxivRawCheckParams) -> bool:
-        # Default strategy follows ArXivToday: fail-open when LLM is unavailable.
-        if params.strict_llm_filter:
-            return bool(params.llm_filter_fail_open)
+        # ArXivToday behavior: fail-open when LLM is unavailable or malformed.
         return True
 
     def _apply_keyword_filter(
@@ -820,10 +805,7 @@ class ArxivRawCheckTool(BaseTool):
             "input_total": len(entries),
             "matched_total": len(entries),
             "fail_count": 0,
-            "fail_open_requested": params.llm_filter_fail_open,
-            "strict_llm_filter": params.strict_llm_filter,
             "fail_open": effective_fail_open,
-            "fail_open_forced": (not params.strict_llm_filter) and (not params.llm_filter_fail_open),
         }
         if not params.use_llm_for_filtering or not entries:
             meta["skipped_reason"] = "disabled_or_empty"
@@ -1055,37 +1037,29 @@ class ArxivRawCheckTool(BaseTool):
         return ""
 
     def _resolve_llm_config(self, params: ArxivRawCheckParams) -> dict[str, Any] | None:
-        model_override = (params.llm_model or "").strip()
-        base_url_override = (params.llm_base_url or "").strip()
-        api_key_override = (params.llm_api_key or "").strip()
+        del params
 
-        # Some model calls inject dummy placeholders (e.g. dummy_key_for_test).
-        # In that case ignore all llm_* overrides and fallback to env config.
-        if self._looks_like_placeholder(api_key_override):
-            model_override = ""
-            base_url_override = ""
-            api_key_override = ""
-
-        # 1) explicit call overrides (must be complete)
-        if api_key_override:
-            base_url = base_url_override or "https://api.openai.com/v1"
-            model = model_override or "gpt-4o-mini"
-            return {
-                "model": model,
-                "base_url": base_url.rstrip("/"),
-                "api_key": api_key_override,
-                "timeout": 60,
-            }
-
-        # 2) daily explicit env pair
+        # 1) dedicated envs for this tool
         daily_key = os.getenv("DAILY_ARXIV_LLM_API_KEY", "").strip()
         daily_base = os.getenv("DAILY_ARXIV_LLM_BASE_URL", "").strip()
         daily_model = os.getenv("DAILY_ARXIV_LLM_MODEL", "").strip()
         if daily_key:
             return {
-                "model": model_override or daily_model or "gpt-4o-mini",
-                "base_url": (base_url_override or daily_base or "https://api.openai.com/v1").rstrip("/"),
+                "model": daily_model or "grok-4.20-0309-reasoning",
+                "base_url": (daily_base or "https://api.x.ai/v1").rstrip("/"),
                 "api_key": daily_key,
+                "timeout": 60,
+            }
+
+        # 2) Grok pair
+        grok_key = os.getenv("GROK_API_KEY", "").strip()
+        grok_base = os.getenv("GROK_BASE_URL", "").strip()
+        grok_model = os.getenv("GROK_MODEL", "").strip()
+        if grok_key:
+            return {
+                "model": daily_model or grok_model or "grok-4.20-0309-reasoning",
+                "base_url": (grok_base or "https://api.x.ai/v1").rstrip("/"),
+                "api_key": grok_key,
                 "timeout": 60,
             }
 
@@ -1093,26 +1067,15 @@ class ArxivRawCheckTool(BaseTool):
         openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         gpt_base = os.getenv("GPT_BASE_URL", "").strip()
         gpt_model = os.getenv("GPT_CHAT_MODEL", "").strip()
+        openai_model = os.getenv("OPENAI_MODEL", "").strip()
         if openai_key:
             return {
-                "model": model_override or gpt_model or "gpt-4o-mini",
-                "base_url": (base_url_override or gpt_base or "https://api.openai.com/v1").rstrip("/"),
+                "model": gpt_model or openai_model or "gpt-4o-mini",
+                "base_url": (gpt_base or "https://api.openai.com/v1").rstrip("/"),
                 "api_key": openai_key,
                 "timeout": 60,
             }
 
-        # 4) Grok pair
-        grok_key = os.getenv("GROK_API_KEY", "").strip()
-        grok_base = os.getenv("GROK_BASE_URL", "").strip()
-        if grok_key:
-            return {
-                "model": model_override or daily_model or "grok-4.20-0309-reasoning",
-                "base_url": (base_url_override or grok_base).rstrip("/") if (base_url_override or grok_base) else "https://api.x.ai/v1",
-                "api_key": grok_key,
-                "timeout": 60,
-            }
-
-        # 5) no available credentials
         return None
 
     def _llm_chat(
@@ -1153,67 +1116,35 @@ class ArxivRawCheckTool(BaseTool):
     ) -> tuple[bool, str, int, str]:
         title = self._clean_text(entry.get("title") or "")
         abstract = self._clean_text(entry.get("summary") or "")
-        prompt = (
-            "You are an academic paper screening assistant.\n"
-            "Task: judge relevance to target scope and output strict JSON only.\n"
-            "Output format:\n"
-            '{"match":"yes|no","relevance":"high|medium|low","score":0-100}\n'
-            "No markdown, no explanation.\n\n"
-            f"Paper title:\n{title}\n\n"
-            f"Paper abstract:\n{abstract}\n\n"
-            f"Target scope:\n{filter_prompt}\n"
-        )
+        prompt = f"""You are an academic paper screening assistant.
+Decide whether this paper matches the target scope.
+Reply with only one word: Yes or No.
+
+Paper title:
+{title}
+
+Paper abstract:
+{abstract}
+
+Target scope:
+{filter_prompt}"""
         answer = self._llm_chat(
             messages=[{"role": "user", "content": prompt}],
             llm_cfg=llm_cfg,
-            max_tokens=80,
+            max_tokens=64,
             temperature=0.0,
         )
-        obj = self._extract_first_json_object(answer)
-        if obj is not None:
-            match_value = str(obj.get("match", "")).strip().lower()
-            relevance = self._normalize_relevance(str(obj.get("relevance", "medium")))
-            try:
-                score = int(obj.get("score", self._score_from_relevance(relevance)))
-            except Exception:
-                score = self._score_from_relevance(relevance)
-            score = max(0, min(100, score))
-
-            if match_value in {"yes", "true", "1", "y"}:
-                return True, relevance, score, answer
-            if match_value in {"no", "false", "0", "n"}:
-                return False, relevance, score, answer
-
-        # fallback for non-json answers
-        normalized = answer.lower()
-        has_yes = bool(re.search(r"\byes\b", normalized))
-        has_no = bool(re.search(r"\bno\b", normalized))
-        relevance = "medium"
-        if re.search(r"\bhigh\b|高度相关|高相关", normalized):
-            relevance = "high"
-        elif re.search(r"\blow\b|低相关", normalized):
-            relevance = "low"
-        score = self._score_from_relevance(relevance)
-
-        if has_yes and not has_no:
-            return True, relevance, score, answer
-        if has_no and not has_yes:
-            return False, relevance, score, answer
-
-        first_token = re.search(r"\b(yes|no)\b", normalized)
-        if first_token:
-            return first_token.group(1) == "yes", relevance, score, answer
-        raise RuntimeError(f"unexpected llm filter reply: {answer}")
+        # ArXivToday behavior: any response containing "yes" is treated as a match.
+        # Errors are handled upstream by fail-open.
+        is_match = "yes" in answer.lower()
+        return is_match, "medium", 55, answer
 
     def _llm_translate_abstract(self, abstract_en: str, llm_cfg: dict[str, Any]) -> str:
-        prompt = (
-            "Please translate the following academic abstract into Simplified Chinese.\n"
-            "Requirements:\n"
-            "1) Keep technical terms accurate.\n"
-            "2) Keep the style concise and professional.\n"
-            "3) Output Chinese translation only, no extra explanation.\n\n"
-            f"{abstract_en}"
-        )
+        prompt = f"""Translate the following academic abstract into Simplified Chinese.
+Keep technical terms accurate and concise.
+Output translation only, no explanations.
+
+{abstract_en}"""
         translated = self._llm_chat(
             messages=[{"role": "user", "content": prompt}],
             llm_cfg=llm_cfg,
@@ -1259,6 +1190,9 @@ class ArxivRawCheckTool(BaseTool):
             f"keyword_mode: {params.keyword_mode}",
             f"token_set_scope: {params.token_set_scope}",
             f"time_window_days: {params.days}",
+            f"scan_limit: {params.scan_limit}",
+            f"max_results: {params.max_results}",
+            f"include_seen: {params.include_seen}",
             f"source: {stats['source']}",
             f"new_total: {stats['new_total']}",
             f"returned_total: {stats['returned_total']}",
@@ -1267,7 +1201,6 @@ class ArxivRawCheckTool(BaseTool):
             f"keyword_matched_total: {stats['keyword_matched_total']}",
             f"llm_matched_total: {stats['llm_matched_total']}",
             f"llm_high_total: {stats['llm_high_total']}",
-            f"strict_llm_filter: {params.strict_llm_filter}",
             f"translation_success_total: {stats['translation_success_total']}",
         ]
 
@@ -1285,7 +1218,7 @@ class ArxivRawCheckTool(BaseTool):
             abstract_zh = ArxivRawCheckTool._clip_text(entry.get("abstract_zh") or "", 220)
             summary = ArxivRawCheckTool._clip_text(entry.get("summary") or "", 140)
             relevance = str(entry.get("llm_relevance") or "medium")
-            score = int(entry.get("llm_relevance_score") or 0)
+            score = int(entry.get("llm_relevance_score") or 55)
             lines.append(
                 f"{idx}. id={entry['paper_id']} | date={published_text} | title={entry['title']}"
             )
