@@ -1,52 +1,43 @@
 # Daily Literature Tracker Usage (Minimal)
 
-## 1) 流程
-- 按 `category` 逐类抓取 arXiv 最新论文（`submittedDate desc`）。
-- 跨分类按去版本号后的论文 ID 去重（与 ArXivToday-Lark 一致）。
-- 关键词做 token-set 初筛（`abstract.lower().split()` 交集逻辑）。
-- 每篇论文固定执行 LLM Yes/No 相关性筛选（fail-open）。
-- 固定执行摘要中译（先 EN，再 ZH）。
-- 用 `profile + category + keyword` 生成 `track_key`，做增量去重。
-- 输出包含 `daily_arxiv_digest_ready`，可被 Feishu 文献卡片解析。
+## 默认行为（极简日报）
+- 默认分类：`cs.CL,cs.AI,cs.CV,cs.CR,cs.LG`
+- 默认时间窗：`days=1`（日报）
+- 默认抓取：`scan_limit=auto`（自动翻页到时间窗边界）
+- 默认返回：`max_results=all`（相关论文全发，不截断）
+- 通过 `profile` 对应 hunts 提示词 + LLM 对每篇论文判定相关性
+- 用 `tracker_state.json` 做增量去重
 
-## 2) 支持参数（仅保留这些）
-- `profile`: 用户标识，建议始终传。
-- `category`: 学科分类，支持逗号分隔多类。
-- `keyword`: 关键词表达式。
-- `days`: 时间窗口天数。
-- `scan_limit`: 每个分类抓取上限。
-- `max_results`: 最终返回上限。
-- `include_seen`: 是否包含历史已见论文。
-- `update_tracker`: 是否写回追踪状态。
+## 你通常只需要传这两个参数
+- `profile`
+- `category`（可不传，不传就用默认 5 个分类）
 
-说明：
-- `use_llm_for_filtering` 与 `use_llm_for_translation` 已移除，不再需要手动传参。
+## 可选参数
+- `days`：默认 `1`
+- `keyword`：默认空（不做关键词预筛）
+- `scan_limit`：默认 `0/auto`
+- `max_results`：默认 `0/all`
+- `include_seen`：默认 `false`
+- `update_tracker`：默认 `true`
 
-## 3) 默认值（prompt 会自动补齐）
-- `category=cs.AI`
-- `keyword=agent`
-- `days=1`
-- `scan_limit=100`
-- `max_results=8`
-- `include_seen=false`
-- `update_tracker=true`
-
-## 4) 常用调用
-### 生产模式
+## 推荐调用（日报）
 ```text
-@Magiclaw daily_literature_tracker 请做论文早报：先调用 arxiv_raw_check，参数 profile=alice, category=cs.AI, keyword=agent, include_seen=false, update_tracker=true；按“今日论文早报”模板输出。
+@Magiclaw daily_literature_tracker 请做今日论文早报：先调用 arxiv_raw_check，参数 profile=alice；按“今日论文早报”模板输出。
 ```
 
-### 测试模式（不污染状态）
-```text
-@Magiclaw daily_literature_tracker 请做论文早报测试：先调用 arxiv_raw_check，参数 profile=alice, category=cs.AI,cs.LG, keyword=agent, days=3, scan_limit=40, max_results=6, include_seen=true, update_tracker=false；按“今日论文早报”模板输出。
-```
+## 运行日志（默认开启）
+- 会输出类似 ArXivToday-Lark 的日志：
+  - `Task / Params`
+  - `Total papers fetched`
+  - `Filtered papers by keyword / LLM`
+  - `LLM response for paper "...": Yes/No`
+  - `Deduplicated papers`
+  - `Translating Abstracts: 63%|████...| 22/35 [05:20<02:55, 13.54s/it]`（进度条）
+  - `Run summary`
+- 关闭详细日志：设置环境变量 `DAILY_ARXIV_VERBOSE_LOG=0`
 
-## 5) 筛选提示词
-- 优先读取：`playground/daily_literature_tracker/hunts/{profile}.md`
-- 回退读取：`playground/daily_literature_tracker/paper_to_hunt.md`
-
-## 6) 状态文件
+## 状态文件
 - `G:\xhe\MagiClaw\data\daily_literature_tracker\tracker_state.json`
-- 测试建议：`include_seen=true, update_tracker=false`
-- 生产建议：`include_seen=false, update_tracker=true`
+- 结构：`track_key -> papers[]`
+- 去重：按 `paper_id`，新论文在前
+- 保留：每个 track 最多 `2000` 条

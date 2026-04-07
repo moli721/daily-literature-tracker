@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _CARD_MAX_BYTES = 90 * 1024
 _MAX_TITLE_LEN = 180
 _MAX_SUMMARY_LEN = 1200
-_HARD_PAPER_LIMIT = 40
+_HARD_PAPER_LIMIT = 200
 _SOFT_PAPERS_PER_CARD = 8
 
 _URL_RE = re.compile(r"https?://[^\s)]+")

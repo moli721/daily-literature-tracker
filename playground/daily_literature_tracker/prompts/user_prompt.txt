@@ -4,11 +4,14 @@
 {description}
 
 执行要求：
-1. 先调用 arxiv_raw_check。
+1. 先调用 `arxiv_raw_check`。
 2. 将用户请求中出现的参数原样传给工具。
-2.1 若用户未给参数，显式补齐默认值：
-   category=cs.AI, keyword=agent, days=1, scan_limit=100, max_results=8,
-   include_seen=false, update_tracker=true。
-3. 不要自行添加任何 llm_api_key/llm_base_url/llm_model。
-3.1 不要传 use_llm_for_filtering/use_llm_for_translation（系统固定开启）。
-4. 直接输出最终日报，不要输出“任务已启动”。
+3. 若用户未给参数，补齐默认值：
+   - category=cs.CL,cs.AI,cs.CV,cs.CR,cs.LG
+   - days=1
+   - include_seen=false
+   - update_tracker=true
+   - keyword 不传（默认空）
+   - scan_limit 不传（默认 auto）
+   - max_results 不传（默认 all）
+4. 直接输出最终早报，不要输出“任务已启动”等中间话术。
