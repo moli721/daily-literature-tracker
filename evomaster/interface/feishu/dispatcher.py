@@ -6,7 +6,9 @@ Dispatch Feishu messages to a thread pool, using ChatSessionManager for multi-tu
 from __future__ import annotations
 
 import importlib
+import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -112,6 +114,29 @@ _LOCAL_ONLY_AGENTS = {"agent_builder"}
 
 class TaskDispatcher:
     """Task dispatcher: implements multi-turn conversation context persistence via session management."""
+
+    _ARXIV_ARG_KEYS = [
+        "profile",
+        "category",
+        "keyword",
+        "keyword_mode",
+        "keyword_list",
+        "token_set_scope",
+        "days",
+        "scan_limit",
+        "max_results",
+        "include_seen",
+        "update_tracker",
+        "track_key",
+        "strict_llm_filter",
+        "use_llm_for_filtering",
+        "use_llm_for_translation",
+        "llm_filter_fail_open",
+        "llm_filter_prompt_file",
+        "llm_model",
+        "llm_base_url",
+        "llm_api_key",
+    ]
 
     def __init__(
         self,
@@ -789,6 +814,84 @@ class TaskDispatcher:
                         )
                 return f"任务执行出错: {e}"
 
+    @staticmethod
+    def _parse_arxiv_raw_check_args_from_task_text(task_text: str) -> dict[str, Any]:
+        """Best-effort parser for `arxiv_raw_check` key=value args embedded in natural-language task text."""
+        text = (task_text or "").strip()
+        if "arxiv_raw_check" not in text:
+            return {}
+
+        m = re.search(r"参数\s*[:：]?\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
+        source = m.group(1).strip() if m else text
+        source = re.split(r"[；;]\s*按[“\"']?今日论文早报", source, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+
+        bool_keys = {
+            "include_seen",
+            "update_tracker",
+            "strict_llm_filter",
+            "use_llm_for_filtering",
+            "use_llm_for_translation",
+            "llm_filter_fail_open",
+        }
+        int_keys = {"days", "scan_limit", "max_results"}
+
+        def _to_bool(v: str) -> bool | None:
+            t = (v or "").strip().lower()
+            if t in {"true", "1", "yes", "y"}:
+                return True
+            if t in {"false", "0", "no", "n"}:
+                return False
+            return None
+
+        def _clean(v: str) -> str:
+            return (v or "").strip().strip('"').strip("'").strip()
+
+        parsed: dict[str, Any] = {}
+        for key in TaskDispatcher._ARXIV_ARG_KEYS:
+            pattern = re.compile(
+                rf"(?is)\b{re.escape(key)}\s*=\s*(.+?)(?=\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*\s*=|[；;。]\s*|$)"
+            )
+            m_key = pattern.search(source)
+            if not m_key:
+                continue
+            raw_value = _clean(m_key.group(1))
+            if not raw_value:
+                continue
+            if key in bool_keys:
+                b = _to_bool(raw_value)
+                if b is not None:
+                    parsed[key] = b
+                continue
+            if key in int_keys:
+                try:
+                    parsed[key] = int(raw_value)
+                except Exception:
+                    continue
+                continue
+            parsed[key] = raw_value
+        return parsed
+
+    def _augment_daily_literature_task_text(self, agent_name: str, task_text: str) -> str:
+        """Append parsed arxiv args JSON for daily_literature_tracker to reduce parameter-loss tool calls."""
+        if agent_name != "daily_literature_tracker":
+            return task_text
+        text = (task_text or "").strip()
+        if not text or "[ARXIV_RAW_CHECK_ARGS_JSON]" in text:
+            return task_text
+
+        parsed = self._parse_arxiv_raw_check_args_from_task_text(text)
+        if not parsed:
+            return task_text
+
+        args_json = json.dumps(parsed, ensure_ascii=False)
+        supplement = (
+            "\n\n[ARXIV_RAW_CHECK_ARGS_JSON]\n"
+            f"{args_json}\n"
+            "执行要求：你必须把上面 JSON 中的每个参数原样透传给 arxiv_raw_check，"
+            "不要删减、不要改写、不要回退默认值。"
+        )
+        return text + supplement
+
     def _run_subtask(
         self, agent_name: str, task_text: str, on_step: Optional[Callable] = None,
         chat_id: Optional[str] = None, sender_open_id: Optional[str] = None,
@@ -802,6 +905,7 @@ class TaskDispatcher:
         """
         from evomaster.utils.types import TaskInstance
 
+        task_text = self._augment_daily_literature_task_text(agent_name, task_text)
         logger.info("Running subtask with agent=%s", agent_name)
         playground = self._create_playground(agent_name, sender_open_id, chat_id=chat_id)
         # Register the current thread with the playground (for log filtering)
@@ -909,6 +1013,7 @@ class TaskDispatcher:
                     self._inject_doc_write_tool(session.playground, sender_open_id)
                     self._inject_ask_user_tool(session.agent)
 
+                    task_text = self._augment_daily_literature_task_text(agent_name, task_text)
                     task = TaskInstance(
                         task_id=f"session_subtask_{agent_name}",
                         task_type="session_subtask",
@@ -925,9 +1030,8 @@ class TaskDispatcher:
                     )
                     session.current_running_agent = session.agent
                     session.agent._cancel_event.clear()
-                    trajectory = session.agent.continue_run(
-                        task_text, on_step=on_step
-                    )
+                    task_text = self._augment_daily_literature_task_text(agent_name, task_text)
+                    trajectory = session.agent.continue_run(task_text, on_step=on_step)
 
                 answer = _extract_final_answer(
                     {"trajectory": trajectory, "status": trajectory.status}
@@ -1280,8 +1384,8 @@ class TaskDispatcher:
             )
             # 创建独立的 step reporter（用户看到独立进度卡片）
             bg_reporter = None
-            bg_on_step = None
-            if self._step_reporter_factory:
+            enable_bg_reporter = bg_task.agent_name != "daily_literature_tracker"
+            if self._step_reporter_factory and enable_bg_reporter:
                 try:
                     bg_reporter = self._step_reporter_factory(
                         chat_id, message_id, sender_open_id
@@ -1437,6 +1541,20 @@ class TaskDispatcher:
         task_desc = review_info["task_description"]
         result = review_info["result"]
         status = review_info["status"]
+
+        # Fast path for literature digest: skip a second LLM review round.
+        # This avoids duplicated/rewritten reports and mirrors ArXivToday-style direct push.
+        if agent_name == "daily_literature_tracker":
+            direct_text = (result or "").strip()
+            if not direct_text:
+                direct_text = "daily_literature_tracker returned empty result."
+            logger.info("Skip secondary review for %s and relay result directly.", agent_name)
+            if self._on_result:
+                try:
+                    self._on_result(chat_id, message_id, direct_text)
+                except Exception:
+                    logger.exception("Failed to send direct result for %s", agent_name)
+            return
 
         status_label = "成功" if status == "completed" else "失败"
         review_prompt = (

@@ -230,6 +230,66 @@ class FeishuStepReporter:
 
         elapsed = time.time() - self._start_time
 
+        # Special path: daily literature digest cards (ArXivToday-like template or rich card).
+        # This is needed because Feishu chat flow often returns None to on_result and final answer
+        # is patched directly by the step reporter.
+        if status == "completed" and final_answer:
+            try:
+                from .messaging.literature_card import build_daily_literature_card_payloads
+                digest_cards = build_daily_literature_card_payloads(final_answer)
+                if digest_cards:
+                    from .messaging.sender import patch_card_message, send_card_message
+
+                    logger.info(
+                        "StepReporter finalize using daily digest cards: count=%d",
+                        len(digest_cards),
+                    )
+
+                    patched = patch_card_message(
+                        self._client,
+                        self._card_message_id,
+                        card_json=digest_cards[0],
+                    )
+                    if not patched:
+                        logger.warning(
+                            "Failed to patch first template digest card, retrying with raw digest card."
+                        )
+                        raw_cards = build_daily_literature_card_payloads(
+                            final_answer,
+                            prefer_template=False,
+                        )
+                        if raw_cards:
+                            patched_raw = patch_card_message(
+                                self._client,
+                                self._card_message_id,
+                                card_json=raw_cards[0],
+                            )
+                            if patched_raw:
+                                for extra_raw_card in raw_cards[1:]:
+                                    send_card_message(
+                                        self._client,
+                                        self._chat_id,
+                                        title="今日论文早报",
+                                        content="",
+                                        card_json=extra_raw_card,
+                                    )
+                                self._finalize_document(status, elapsed)
+                                return
+                            logger.warning("Failed to patch raw digest card too, fallback to default finalize.")
+                    else:
+                        for extra_card in digest_cards[1:]:
+                            send_card_message(
+                                self._client,
+                                self._chat_id,
+                                title="今日论文早报",
+                                content="",
+                                card_json=extra_card,
+                            )
+                        self._finalize_document(status, elapsed)
+                        return
+            except Exception:
+                logger.exception("Daily digest card finalize failed, fallback to default finalize.")
+
         content = self._build_progress_content(
             self._step_count, self._step_count, running=False
         )

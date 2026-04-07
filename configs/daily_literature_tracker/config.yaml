@@ -22,8 +22,6 @@ agents:
     tools:
       # Keep tools minimal for daily stability.
       builtin: ["think", "finish"]
-      # Enable this when you want deep enrichment:
-      # mcp: "mcp_config.json"
       mcp: ""
       arxiv_raw_check: "arxiv_raw_check"
 

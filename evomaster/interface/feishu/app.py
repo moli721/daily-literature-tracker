@@ -22,6 +22,7 @@ from .dispatcher import TaskDispatcher
 from .messaging.document import FeishuDocumentWriter
 from .event_handler import parse_event
 from .messaging.sender import send_card_message, send_text_message
+from .messaging.literature_card import build_daily_literature_card_payloads
 from .step_reporter import FeishuStepReporter
 
 logger = logging.getLogger(__name__)
@@ -469,6 +470,22 @@ class FeishuBot:
 
         Short text uses plain text messages; long text uses card messages (supports Markdown).
         """
+        digest_cards = build_daily_literature_card_payloads(result_text)
+        if digest_cards:
+            logger.info("Sending daily literature digest cards: count=%d", len(digest_cards))
+            for idx, card_json in enumerate(digest_cards):
+                send_card_message(
+                    self._client,
+                    chat_id,
+                    title="今日论文早报",
+                    content="",
+                    reply_to_message_id=message_id if idx == 0 else None,
+                    card_json=card_json,
+                )
+            return
+        if any(marker in result_text for marker in ("论文早报", "track_key:", "追踪键：", "daily_arxiv_digest_ready")):
+            logger.warning("Daily report markers detected but card parser returned 0 payloads, fallback to default sender.")
+
         if len(result_text) > _CARD_THRESHOLD:
             # Use card message for long content
             send_card_message(
