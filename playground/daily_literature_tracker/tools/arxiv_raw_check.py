@@ -4,8 +4,10 @@ import html
 import json
 import os
 import re
+import threading
 import time
 import urllib.parse
+import uuid
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -105,6 +107,13 @@ class ArxivRawCheckParams(BaseToolParams):
         default="",
         description="Optional profile for tracker isolation and hunts/{profile}.md lookup.",
     )
+    track_key: str = Field(
+        default="",
+        description=(
+            "Optional tracker key override. "
+            "If omitted, uses {profile_or_default}."
+        ),
+    )
     include_seen: bool = Field(
         default=False,
         description="When true, include already-seen papers in results.",
@@ -120,6 +129,7 @@ class ArxivRawCheckTool(BaseTool):
 
     name: ClassVar[str] = "arxiv_raw_check"
     params_class: ClassVar[type[BaseToolParams]] = ArxivRawCheckParams
+    _RUN_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self) -> None:
         super().__init__()
@@ -127,6 +137,7 @@ class ArxivRawCheckTool(BaseTool):
         self._state_file = project_root / "data" / "daily_literature_tracker" / "tracker_state.json"
         self._config_file = _DEFAULT_CONFIG_FILE
         self._tool_config = self._load_tool_config()
+        self._log_prefix = ""
         self._verbose_log = (os.getenv("DAILY_ARXIV_VERBOSE_LOG", "1").strip().lower()) not in {
             "0",
             "false",
@@ -136,7 +147,15 @@ class ArxivRawCheckTool(BaseTool):
 
     def _vlog(self, message: str, *args: Any) -> None:
         if self._verbose_log:
-            self.logger.info(message, *args)
+            rendered = message
+            if args:
+                try:
+                    rendered = message % args
+                except Exception:
+                    rendered = f"{message} | args={args}"
+            if self._log_prefix:
+                rendered = f"{self._log_prefix}{rendered}"
+            self.logger.info("%s", rendered)
 
     def _load_tool_config(self) -> dict[str, Any]:
         config: dict[str, Any] = {
@@ -280,19 +299,34 @@ class ArxivRawCheckTool(BaseTool):
             return f"Invalid parameters: {e}", {"error": str(e)}
         self._apply_config_defaults(params, raw_args)
 
+        lock_acquired = ArxivRawCheckTool._RUN_LOCK.acquire(blocking=False)
+        if not lock_acquired:
+            self.logger.info("Another arxiv_raw_check run is active, waiting for lock...")
+            ArxivRawCheckTool._RUN_LOCK.acquire()
+
+        run_id = uuid.uuid4().hex[:8]
+        self._log_prefix = f"[run={run_id}] "
+
         try:
             categories = self._normalize_categories(params.category)
             if not categories:
                 return "Invalid category: at least one category is required.", {"error": "invalid_category"}
 
             profile = self._normalize_profile(params.profile)
+            profile_for_key = profile or "default"
             keyword_tokens = self._parse_keyword_tokens(params.keyword)
-            track_key = self._build_track_key(categories, params.keyword, profile)
+            track_key = self._build_track_key(
+                categories,
+                params.keyword,
+                profile_for_key,
+                params.track_key,
+            )
+            self._log_prefix = f"[run={run_id} track={track_key}] "
             filter_prompt, filter_prompt_file = self._load_filter_prompt(profile)
             self._vlog("Task: %s", date.today().isoformat())
             self._vlog(
                 "Params: profile=%s, category=%s, keyword=%s, days=%d, scan_limit=%s, max_results=%s, include_seen=%s, update_tracker=%s",
-                profile or "-",
+                profile_for_key,
                 ",".join(categories),
                 params.keyword or "*",
                 params.days,
@@ -391,7 +425,7 @@ class ArxivRawCheckTool(BaseTool):
                 "categories": categories,
                 "keyword_expr": params.keyword,
                 "keyword_tokens": keyword_tokens,
-                "profile": profile or None,
+                "profile": profile_for_key,
                 "days": params.days,
                 "include_seen": params.include_seen,
                 "scan_limit": params.scan_limit,
@@ -422,6 +456,9 @@ class ArxivRawCheckTool(BaseTool):
         except Exception as e:
             self.logger.exception("arxiv_raw_check failed")
             return f"Failed to scan arXiv: {e}", {"error": str(e)}
+        finally:
+            self._log_prefix = ""
+            ArxivRawCheckTool._RUN_LOCK.release()
 
     def _fetch_entries(
         self,
@@ -1384,17 +1421,32 @@ Output translation only, no explanations.
         return list(dict.fromkeys(tokens))
 
     @staticmethod
-    def _build_track_key(categories: list[str], keyword: str, profile: str = "") -> str:
-        category_part = re.sub(r"[^a-z0-9]+", "_", "_".join(c.lower() for c in categories)).strip("_")
-        keyword_part = re.sub(r"[^a-z0-9]+", "_", (keyword or "").lower()).strip("_")
+    def _build_track_key(
+        categories: list[str],
+        keyword: str,
+        profile: str = "",
+        custom_track_key: str = "",
+    ) -> str:
+        del categories
+        del keyword
+        custom = ArxivRawCheckTool._normalize_custom_track_key(custom_track_key)
+        if custom:
+            return custom
+
         profile_part = re.sub(r"[^a-z0-9_-]+", "_", (profile or "").lower()).strip("_")
-        if profile_part:
-            if keyword_part:
-                return f"daily_{profile_part}_{category_part}_{keyword_part}"[:120]
-            return f"daily_{profile_part}_{category_part}"[:120]
-        if keyword_part:
-            return f"daily_{category_part}_{keyword_part}"[:120]
-        return (f"daily_{category_part}"[:120] or "daily_default")
+        if not profile_part:
+            profile_part = "default"
+        return profile_part[:120]
+
+    @staticmethod
+    def _normalize_custom_track_key(track_key: str) -> str:
+        text = (track_key or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"[^a-z0-9_-]+", "_", text).strip("_")
+        if not text:
+            return ""
+        return text[:120]
 
     @staticmethod
     def _extract_paper_id(raw_id: str) -> str:

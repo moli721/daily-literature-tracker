@@ -31,6 +31,7 @@ def _format_time(epoch: float, tz_str: str = "Asia/Shanghai") -> str:
 
 
 _REMINDER_KEYWORDS = ("提醒", "remind", "通知", "notify", "告诉", "tell")
+_DAILY_DIGEST_MARKERS = ("论文早报", "track_key:", "追踪键：", "daily_arxiv_digest_ready")
 
 
 def _is_simple_reminder(desc: str) -> bool:
@@ -74,15 +75,67 @@ class FeishuResultNotifier:
     def notify_success(self, job: ScheduledJob, result: str) -> None:
         if _is_simple_reminder(job.task_description):
             text = f"⏰ 提醒: {job.task_description}"
-        else:
-            text = (
-                f"⏰ 定时任务完成\n"
-                f"任务: {job.task_description[:200]}\n"
-                f"结果:\n{result[:2000]}"
-            )
+            self._send_with_retry(job.chat_id, text)
+            return
+
+        if self._is_daily_digest_result(result):
+            sent = self._send_digest_cards_with_retry(job.chat_id, result)
+            if sent:
+                if job.status == JobStatus.ACTIVE:
+                    self._send_with_retry(
+                        job.chat_id,
+                        f"下次执行: {_format_time(job.next_run_at, job.timezone)}",
+                    )
+                return
+
+        text = (
+            f"⏰ 定时任务完成\n"
+            f"任务: {job.task_description[:200]}\n"
+            f"结果:\n{result[:2000]}"
+        )
         if job.status == JobStatus.ACTIVE:
             text += f"\n\n下次执行: {_format_time(job.next_run_at, job.timezone)}"
         self._send_with_retry(job.chat_id, text)
+
+    @staticmethod
+    def _is_daily_digest_result(result: str) -> bool:
+        text = (result or "").strip()
+        if not text:
+            return False
+        return any(marker in text for marker in _DAILY_DIGEST_MARKERS)
+
+    def _send_digest_cards_with_retry(self, chat_id: str, result: str) -> bool:
+        from .messaging.literature_card import build_daily_literature_card_payloads
+        from .messaging.sender import send_card_message
+
+        cards = build_daily_literature_card_payloads(result)
+        if not cards:
+            logger.warning("Scheduler result has daily digest markers but card parser returned 0 payloads.")
+            return False
+
+        for idx, card_json in enumerate(cards):
+            delivered = False
+            for attempt in range(self._max_retries + 1):
+                try:
+                    message_id = send_card_message(
+                        self._client,
+                        chat_id,
+                        title="今日论文早报",
+                        content="",
+                        card_json=card_json,
+                    )
+                    if message_id:
+                        delivered = True
+                        break
+                except Exception:
+                    logger.exception("Failed to send digest card chunk=%d attempt=%d", idx + 1, attempt + 1)
+
+                if attempt < self._max_retries:
+                    time.sleep(1)
+            if not delivered:
+                logger.error("Failed to send digest card chunk=%d after retries", idx + 1)
+                return False
+        return True
 
     def notify_failure(self, job: ScheduledJob, error: str) -> None:
         text = (
